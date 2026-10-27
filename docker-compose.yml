@@ -1,0 +1,131 @@
+name: besa-agent
+
+x-besa: &besa
+  image: besa-agent:local
+  build: .
+  restart: unless-stopped
+  environment: &besa-env
+    BESA_ENV: prod
+    BESA_POSTGRES_DSN: postgresql://besa:besa@postgres:5432/besa_agent
+    BESA_REDIS_URL: redis://redis:6379/0
+    BESA_NATS_URL: nats://nats:4222
+    BESA_S3_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: besa
+    MINIO_SECRET_KEY: besa-secret
+    BESA_LOG_LEVEL: INFO
+  volumes:
+    - ./configs:/app/configs:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    nats:
+      condition: service_started
+    minio-init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: besa
+      POSTGRES_PASSWORD: besa
+      POSTGRES_DB: besa_agent
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U besa -d besa_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222", "--store_dir", "/data"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: [natsdata:/data]
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9009"]
+    environment:
+      MINIO_ROOT_USER: besa
+      MINIO_ROOT_PASSWORD: besa-secret
+    ports: ["9000:9000", "9009:9009"]
+    volumes: [miniodata:/data]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 besa besa-secret; do sleep 1; done;
+      mc mb -p local/besa-agent || true;
+      mc anonymous set none local/besa-agent || true;
+      exit 0"
+
+  besa-gateway:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "gateway"]
+    ports: ["9001:9001"]
+
+  besa-tool:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "tool"]
+    ports: ["9002:9002"]
+    environment:
+      <<: *besa-env
+      BESA_WORKDIR: /workspace
+    volumes:
+      - ./configs:/app/configs:ro
+      - toolworkspace:/workspace
+
+  besa-memory:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "memory"]
+    ports: ["9004:9004"]
+
+  besa-agent:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "agent"]
+    ports: ["9003:9003"]
+
+  besa-strategy:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "strategy"]
+    ports: ["9005:9005"]
+
+  besa-experience:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "experience"]
+    ports: ["9006:9006"]
+
+  besa-orchestrator:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "orchestrator"]
+    ports: ["9007:9007", "9008:9008"]
+
+  besa-control:
+    <<: *besa
+    command: ["--env", "prod", "serve", "--role", "control"]
+    ports: ["8080:8080"]
+
+volumes:
+  pgdata:
+  redisdata:
+  natsdata:
+  miniodata:
+  toolworkspace:

@@ -1,0 +1,26 @@
+# 预定义流程：需求 → 测试设计 → 用例 → 环境 → 执行 → 分析 → 缺陷
+#
+# 边没有 field，表示“只表达先后依赖，不传递具体字段”。
+# 这样既不丢拓扑顺序，又不会因为各阶段输出 schema 不同而被 IO 校验误杀。
+# 需要传字段时再写 field，并在 Agent 能力元数据里声明同名的 outputs/inputs。
+
+id: full-test-flow
+version: v1
+origin: predefined
+
+nodes:
+  - {id: requirement, agent: requirement}
+  - {id: test_design, agent: test_design, optional: true}
+  - {id: test_case, agent: test_case}
+  - {id: environment, agent: environment, optional: true}
+  - {id: execution, agent: execution, optional: true}
+  - {id: analysis, agent: analysis, optional: true}
+  - {id: defect, agent: defect, optional: true}
+
+edges:
+  - {src: requirement, dst: test_design, kind: data}
+  - {src: test_design, dst: test_case, kind: data}
+  - {src: test_case, dst: environment, kind: data}
+  - {src: environment, dst: execution, kind: data}
+  - {src: execution, dst: analysis, kind: data}
+  - {src: analysis, dst: defect, kind: data}

@@ -1,0 +1,64 @@
+# prod.yaml —— 容器/集群部署。外部依赖由环境变量注入（见 docker-compose.yml）。
+#
+# 默认候选链仍然是 mock：**开箱即跑、不产生外部调用**。
+# 接真实模型时，把 api_key_env 对应的密钥放进 secrets，再改候选链即可 ——
+# 业务代码零改动。
+
+logging:
+  level: INFO
+  format: json
+
+gateway:
+  aliases:
+    runtime.default:
+      # 真实部署换成 [runtime-deepseek, runtime-qwen, runtime-mock]
+      candidates: [runtime-mock]
+      strategy: [capability, priority]
+    emb.default:
+      candidates: [emb-mock]
+      strategy: [capability]
+  rate_limit:
+    enabled: true
+    backend: redis          # 分布式必须用 Redis，否则多副本会让配额超发 N 倍
+    defaults:
+      rpm: 600
+      tpm: 200000
+      max_concurrency: 32
+    on_exceed: wait
+
+tool:
+  permission:
+    levels: [read, write]
+    scope:
+      read: ["${BESA_WORKDIR:-/workspace}"]
+      write: ["${BESA_WORKDIR:-/workspace}"]
+
+repo:
+  embedding:
+    # 与 emb.default 的 mock 维度一致；接真实 embedding 时同步改这里与模型 dimension
+    dim: 768
+    model_key: emb-mock
+
+memory:
+  enabled: true
+  scope:
+    allow: [session]
+
+workflow:
+  auto:
+    allow: true
+    require_approval: false
+
+experience:
+  enabled: true
+
+# 服务发现：compose 与同 namespace 的 K8s 都走 Service 名。
+clients:
+  gateway: "besa-gateway:9001"
+  tool: "besa-tool:9002"
+  agent: "besa-agent:9003"
+  memory: "besa-memory:9004"
+  strategy: "besa-strategy:9005"
+  experience: "besa-experience:9006"
+  orchestrator: "besa-orchestrator:9007"
+  workflow: "besa-orchestrator:9008"

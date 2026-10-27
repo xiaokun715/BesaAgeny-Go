@@ -1,0 +1,528 @@
+syntax = "proto3";
+
+package besa.v1;
+
+option go_package = "github.com/besa-ai/besa-agent/api/proto/v1;besav1";
+
+import "google/protobuf/struct.proto";
+
+// ---------------------------------------------------------------------------
+// 公共消息
+// ---------------------------------------------------------------------------
+message ContentPart {
+  string text = 1;
+  string image_url = 2;
+  string image_data = 3;
+  string media_type = 4;
+  string detail = 5;
+}
+
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  string arguments_raw = 3;
+  google.protobuf.Struct arguments = 4;
+}
+
+message Message {
+  string role = 1;
+  string content = 2;
+  repeated ContentPart parts = 3;
+  string name = 4;
+  string tool_call_id = 5;
+  repeated ToolCall tool_calls = 6;
+}
+
+message ToolSpec {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct parameters = 3;
+}
+
+message Usage {
+  optional int32 input_tokens = 1;
+  optional int32 output_tokens = 2;
+  optional int32 cached_input_tokens = 3;
+}
+
+message Cost {
+  string currency = 1;
+  // 十进制字符串；amount_known=false 表示未知（不是 0）。
+  string amount = 2;
+  bool amount_known = 3;
+}
+
+message ChatOptions {
+  string trace_id = 1;
+  string session_id = 2;
+  string caller = 3;
+  double deadline_s = 4;
+  optional double temperature = 5;
+  optional int32 max_tokens = 6;
+  repeated ToolSpec tools = 7;
+  string tool_choice = 8;
+  string response_format = 9;
+  google.protobuf.Struct json_schema = 10;
+  repeated string stop = 11;
+}
+
+message ChatRequest {
+  string alias = 1;
+  repeated Message messages = 2;
+  ChatOptions options = 3;
+}
+
+message AttemptRecord {
+  string model_key = 1;
+  string provider = 2;
+  string outcome = 3;
+  string error = 4;
+  bool retryable = 5;
+  string skipped_reason = 6;
+  double elapsed_s = 7;
+}
+
+message GatewayResult {
+  string alias = 1;
+  string model_key = 2;
+  repeated AttemptRecord attempts = 3;
+  bool degraded = 4;
+  Usage usage = 5;
+  Cost cost = 6;
+  string trace_id = 7;
+  string content = 8;
+  string model = 9;
+  string finish_reason = 10;
+  string reasoning = 11;
+  repeated ToolCall tool_calls = 12;
+  bool structured_native = 13;
+}
+
+message FloatArray { repeated float values = 1; }
+
+message EmbedRequest {
+  string alias = 1;
+  repeated string texts = 2;
+  ChatOptions options = 3;
+}
+
+message EmbedResponse {
+  repeated FloatArray vectors = 1;
+  string model = 2;
+  int32 dimension = 3;
+  Usage usage = 4;
+  Cost cost = 5;
+  GatewayResult meta = 6;
+}
+
+message StreamEvent {
+  oneof event {
+    string chunk = 1;
+    GatewayResult done = 2;
+    StreamFailure failed = 3;
+  }
+}
+
+message StreamFailure {
+  string error = 1;
+  repeated AttemptRecord attempts = 2;
+}
+
+message AliasRequest { string alias = 1; }
+message ContextWindowResponse { bool known = 1; int32 window = 2; }
+message HealthResponse { map<string, string> circuits = 1; }
+
+service GatewayService {
+  rpc Chat(ChatRequest) returns (GatewayResult);
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+  rpc StreamChat(ChatRequest) returns (stream StreamEvent);
+  rpc ContextWindow(AliasRequest) returns (ContextWindowResponse);
+  rpc Health(Empty) returns (HealthResponse);
+}
+
+message Empty {}
+
+// ---------------------------------------------------------------------------
+// 工具执行
+// ---------------------------------------------------------------------------
+message ToolInvocation {
+  string tool_name = 1;
+  google.protobuf.Struct arguments = 2;
+  string scope = 3;
+  string idempotency_key = 4;
+  string trace_id = 5;
+  string session_id = 6;
+  string caller = 7;
+}
+
+message ToolResultMsg {
+  string outcome = 1;
+  string tool_name = 2;
+  string output = 3;
+  string error = 4;
+  bool truncated = 5;
+  double elapsed_s = 6;
+  string idem_key = 7;
+  string spilled_path = 8;
+  bool redacted = 9;
+  string error_kind = 10;
+  string recovery = 11;
+  string hint = 12;
+}
+
+message ToolDefinitionMsg {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct parameters = 3;
+  string side_effect = 4;
+  string category = 5;
+}
+
+message ListToolsRequest { repeated string categories = 1; repeated string only = 2; }
+message ListToolsResponse { repeated ToolDefinitionMsg tools = 1; }
+
+service ToolService {
+  rpc Invoke(ToolInvocation) returns (ToolResultMsg);
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 单 agent 运行时
+// ---------------------------------------------------------------------------
+message RunRequest {
+  string task = 1;
+  string stage = 2;
+  string hint = 3;
+  string session_id = 4;
+  string caller = 5;
+  string run_id = 6;
+  bool resume = 7;
+  repeated Message history = 8;
+}
+
+message RoutingDecisionMsg {
+  string stage = 1;
+  string reason = 2;
+  double confidence = 3;
+  repeated string candidates = 4;
+  bool needs_input = 5;
+}
+
+message RunOutcomeMsg {
+  string run_id = 1;
+  string stage = 2;
+  string status = 3;
+  string answer = 4;
+  int32 steps = 5;
+  int32 tool_calls = 6;
+  double elapsed_s = 7;
+  string cost = 8;
+  bool cost_known = 9;
+  string error = 10;
+  string reason = 11;
+  RoutingDecisionMsg routing = 12;
+}
+
+message CancelRequest { string run_id = 1; }
+message CancelResponse { bool ok = 1; }
+
+service AgentService {
+  rpc RunOne(RunRequest) returns (RunOutcomeMsg);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 记忆
+// ---------------------------------------------------------------------------
+message MemoryTurn {
+  string role = 1;
+  string content = 2;
+}
+
+message MemoryContext {
+  string tenant_id = 1;
+  string scope = 2;
+  string owner_id = 3;
+  string session_id = 4;
+  string caller = 5;
+  string trace_id = 6;
+}
+
+message MemoryRememberRequest {
+  repeated MemoryTurn turns = 1;
+  string source = 2;
+  MemoryContext context = 3;
+}
+
+message MemoryItemMsg {
+  string id = 1;
+  string content = 2;
+  string kind = 3;
+  string scope = 4;
+  double score = 5;
+  double weight = 6;
+  string match_reason = 7;
+}
+
+message MemoryRememberResponse { repeated MemoryItemMsg items = 1; }
+
+message MemoryRecallRequest {
+  string query = 1;
+  repeated string kinds = 2;
+  int32 top_k = 3;
+  MemoryContext context = 4;
+}
+
+message MemoryRecallResponse { repeated MemoryItemMsg items = 1; }
+message MemoryMaintainRequest { string tenant_id = 1; }
+message MemoryMaintainResponse { int32 scanned = 1; int32 tombstoned = 2; }
+
+service MemoryService {
+  rpc Remember(MemoryRememberRequest) returns (MemoryRememberResponse);
+  rpc Recall(MemoryRecallRequest) returns (MemoryRecallResponse);
+  rpc Maintain(MemoryMaintainRequest) returns (MemoryMaintainResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 策略选择
+// ---------------------------------------------------------------------------
+message TaskFeaturesMsg {
+  string task_type = 1;
+  string risk = 2;
+  optional int32 budget_tokens = 3;
+  optional int32 budget_latency_ms = 4;
+  optional double budget_cost = 5;
+  string environment = 6;
+  repeated string input_assets = 7;
+  string template = 8;
+}
+
+message ViolationMsg {
+  string rule = 1;
+  string detail = 2;
+  string suggestion = 3;
+}
+
+message SelectionDecisionMsg {
+  string profile_name = 1;
+  map<string, string> bindings = 2;
+  map<string, string> versions = 3;
+  string layer = 4;
+  string reason = 5;
+  bool degraded = 6;
+  bool refused = 7;
+  bool has_profile = 8;
+  repeated ViolationMsg violations = 9;
+  string profile_key = 10;
+}
+
+message StrategySpecMsg {
+  string kind = 1;
+  string name = 2;
+  string version = 3;
+  bool available = 4;
+  string unavailable_reason = 5;
+  repeated string scenarios = 6;
+}
+
+message ListStrategiesResponse { repeated StrategySpecMsg strategies = 1; }
+
+service StrategyService {
+  rpc Select(TaskFeaturesMsg) returns (SelectionDecisionMsg);
+  rpc List(Empty) returns (ListStrategiesResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 经验
+// ---------------------------------------------------------------------------
+message EvidenceMsg {
+  string kind = 1;
+  string source = 2;
+  string detail = 3;
+  double weight = 4;
+}
+
+message FailureMsg {
+  string stage = 1;
+  string status = 2;
+  string error_type = 3;
+  string message = 4;
+  repeated EvidenceMsg evidence = 5;
+  optional bool retryable = 6;
+  string recovery_action = 7;
+  string trace_id = 8;
+  string run_id = 9;
+  string node_id = 10;
+  string risk = 11;
+}
+
+message RecoveryDecisionMsg {
+  string action = 1;
+  string reason = 2;
+  repeated string missing_inputs = 3;
+}
+
+message HypothesisMsg {
+  string statement = 1;
+  string suspected_node = 2;
+  string rationale = 3;
+  repeated EvidenceMsg evidence = 4;
+  string state = 5;
+  bool experiment_reproduced = 6;
+  string experiment_result = 7;
+}
+
+message SettleRequest {
+  FailureMsg failure = 1;
+  HypothesisMsg hypothesis = 2;
+  string recovery = 3;
+  double success_rate = 4;
+  int32 samples = 5;
+  bool reproducible = 6;
+  string tenant_id = 7;
+  string category = 8;
+}
+
+message ExperienceMsg {
+  string id = 1;
+  string category = 2;
+  string scenario = 3;
+  string symptom = 4;
+  map<string, string> conditions = 5;
+  repeated EvidenceMsg evidence = 6;
+  string root_cause = 7;
+  string recovery_strategy = 8;
+  map<string, string> scope = 9;
+  double success_rate = 10;
+  int32 samples = 11;
+  string state = 12;
+}
+
+message SettleResponse { repeated ExperienceMsg experiences = 1; }
+
+message ExperienceRecallRequest {
+  string tenant_id = 1;
+  string stage = 2;
+  string error_type = 3;
+  string scenario = 4;
+  map<string, string> environment = 5;
+  int32 top_k = 6;
+}
+
+message ExperienceRecallResponse { repeated ExperienceMsg experiences = 1; repeated string conflicts = 2; }
+
+message RecordApplicationRequest {
+  string experience_id = 1;
+  string trace_id = 2;
+  string outcome = 3;
+  double metric_before = 4;
+  double metric_after = 5;
+}
+
+message MaintainExperiencesRequest { string tenant_id = 1; }
+message MaintainExperiencesResponse { int32 changed = 1; }
+
+service ExperienceService {
+  rpc OnFailure(FailureMsg) returns (RecoveryDecisionMsg);
+  rpc Settle(SettleRequest) returns (SettleResponse);
+  rpc Recall(ExperienceRecallRequest) returns (ExperienceRecallResponse);
+  rpc RecordApplication(RecordApplicationRequest) returns (Empty);
+  rpc Maintain(MaintainExperiencesRequest) returns (MaintainExperiencesResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 多 Agent 编排
+// ---------------------------------------------------------------------------
+message OrchestrateRequest {
+  string task = 1;
+  string strategy = 2;
+  repeated string participants = 3;
+  int32 rounds = 4;
+  string session_id = 5;
+  string caller = 6;
+  string risk = 7;
+}
+
+message ParticipantRunMsg {
+  string name = 1;
+  string stage = 2;
+  string status = 3;
+  string answer = 4;
+  string error = 5;
+  string cost = 6;
+  bool needs_review = 7;
+}
+
+message OrchestrateResponse {
+  string strategy = 1;
+  string answer = 2;
+  double consensus = 3;
+  string reason = 4;
+  repeated ParticipantRunMsg runs = 5;
+}
+
+service OrchestratorService {
+  rpc Run(OrchestrateRequest) returns (OrchestrateResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 工作流
+// ---------------------------------------------------------------------------
+message NodeDef {
+  string id = 1;
+  string agent = 2;
+  map<string, string> inputs = 3;
+  bool optional = 4;
+  string reason = 5;
+}
+
+message EdgeDef {
+  string src = 1;
+  string dst = 2;
+  string kind = 3;
+  string field = 4;
+}
+
+message WorkflowDef {
+  string workflow_id = 1;
+  string version = 2;
+  string origin = 3;
+  repeated NodeDef nodes = 4;
+  repeated EdgeDef edges = 5;
+}
+
+message WorkflowIssueMsg {
+  string kind = 1;
+  string node_id = 2;
+  string detail = 3;
+  string suggestion = 4;
+}
+
+message WorkflowRunRequest {
+  WorkflowDef workflow = 1;
+  google.protobuf.Struct input = 2;
+  bool resume = 3;
+}
+
+message WorkflowNodeResultMsg {
+  string node_id = 1;
+  string status = 2;
+  string error = 3;
+  double elapsed_s = 4;
+  bool needs_review = 5;
+  google.protobuf.Struct outputs = 6;
+}
+
+message WorkflowRunResponse {
+  string workflow_run_id = 1;
+  string status = 2;
+  string error = 3;
+  repeated WorkflowNodeResultMsg nodes = 4;
+}
+
+message ValidateResponse { repeated WorkflowIssueMsg issues = 1; }
+
+service WorkflowService {
+  rpc Validate(WorkflowDef) returns (ValidateResponse);
+  rpc Run(WorkflowRunRequest) returns (WorkflowRunResponse);
+}
