@@ -1,5 +1,6 @@
 .env
 bin/
+dist/
 *.exe
 *.test
 *.out

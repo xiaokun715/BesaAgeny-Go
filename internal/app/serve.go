@@ -289,7 +289,8 @@ func (c *CLI) runAgent(ctx context.Context, opts composition.Options, addr strin
 	}
 	sessions := composition.NewSessionStore(base)
 	tasks := taskStore(base)
-	worker := &Worker{Base: base, Runtime: rt, Sessions: sessions, Tasks: tasks, Redis: base.Redis}
+	worker := &Worker{Base: base, Runtime: rt, Sessions: sessions, Tasks: tasks, Redis: base.Redis,
+		Runs: &postgres.RunRepo{DB: base.DB}}
 	if conn, dialErr := transport.Dial(base.Config.String("clients.experience", "127.0.0.1:9006")); dialErr == nil {
 		worker.Experience = transport.NewExperienceClient(conn)
 	}

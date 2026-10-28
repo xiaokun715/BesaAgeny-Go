@@ -144,7 +144,7 @@ func (r *Runtime) RunOne(ctx stdctx.Context, req RunRequest) RunOutcome {
 		return RunOutcome{RunID: runID, Status: StatusFailed, Error: reason, Elapsed: b.elapsed()}
 	}
 	r.emit(ctx, EventStageRouted, map[string]any{
-		"run_id": runID, "stage": decision.Stage, "reason": decision.Reason,
+		"run_id": runID, "session_id": req.SessionID, "stage": decision.Stage, "reason": decision.Reason,
 		"confidence": decision.Confidence, "needs_input": decision.NeedsInput, "candidates": decision.Candidates,
 	})
 	if decision.NeedsInput {
@@ -161,7 +161,7 @@ func (r *Runtime) RunOne(ctx stdctx.Context, req RunRequest) RunOutcome {
 	}
 
 	resumed, kind, reason := r.decideResume(ctx, runID, req.Resume)
-	r.emit(ctx, EventResumeDecided, map[string]any{"run_id": runID, "decision": kind, "reason": reason})
+	r.emit(ctx, EventResumeDecided, map[string]any{"run_id": runID, "session_id": req.SessionID, "decision": kind, "reason": reason})
 	switch kind {
 	case "needs_review":
 		out := RunOutcome{RunID: runID, Stage: agentDef.Stage, Status: StatusNeedsReview, Reason: reason, Routing: &decision, Elapsed: b.elapsed()}
@@ -186,7 +186,7 @@ func (r *Runtime) RunOne(ctx stdctx.Context, req RunRequest) RunOutcome {
 		built := r.Context.Build(ctx, contextReq)
 		messages = built.Messages
 		if built.DegradedReason != "" {
-			r.emit(ctx, EventDegraded, map[string]any{"run_id": runID, "phase": "context", "reason": built.DegradedReason})
+			r.emit(ctx, EventDegraded, map[string]any{"run_id": runID, "session_id": req.SessionID, "phase": "context", "reason": built.DegradedReason})
 		}
 	} else {
 		messages = []domain.Message{domain.System(agentDef.SystemPrompt), domain.User(current)}
@@ -203,7 +203,7 @@ func (r *Runtime) RunOne(ctx stdctx.Context, req RunRequest) RunOutcome {
 	}
 	if r.Context != nil && r.Policy.Context.Enabled {
 		hooks.Prepare = func(ctx stdctx.Context, msgs []domain.Message, step int, remaining *time.Duration) ([]domain.Message, error) {
-			return r.prepare(ctx, runID, msgs, step)
+			return r.prepare(ctx, runID, req.SessionID, msgs, step)
 		}
 	}
 
@@ -217,7 +217,7 @@ func (r *Runtime) RunOne(ctx stdctx.Context, req RunRequest) RunOutcome {
 		status = StatusCancelled
 	}
 	if status == StatusFailed && result.Error != "" {
-		r.emit(ctx, EventBudgetExhausted, map[string]any{"run_id": runID, "reason": result.Error})
+		r.emit(ctx, EventBudgetExhausted, map[string]any{"run_id": runID, "session_id": req.SessionID, "reason": result.Error})
 	}
 	cost := result.Cost
 	if cost == nil {
@@ -238,7 +238,7 @@ func (r *Runtime) RunOne(ctx stdctx.Context, req RunRequest) RunOutcome {
 	return outcome
 }
 
-func (r *Runtime) prepare(ctx stdctx.Context, runID string, messages []domain.Message, step int) ([]domain.Message, error) {
+func (r *Runtime) prepare(ctx stdctx.Context, runID, sessionID string, messages []domain.Message, step int) ([]domain.Message, error) {
 	policy := r.Policy.Context
 	if r.Context == nil || !policy.Enabled {
 		return messages, nil
@@ -271,7 +271,7 @@ func (r *Runtime) prepare(ctx stdctx.Context, runID string, messages []domain.Me
 		saved += e.Before - e.After
 	}
 	r.emit(ctx, EventContextCompacted, map[string]any{
-		"run_id": runID, "step": step + 1, "level": result.LevelUsed,
+		"run_id": runID, "session_id": sessionID, "step": step + 1, "level": result.LevelUsed,
 		"saved_tokens": saved, "blocks": len(result.Blocks), "note": result.Note,
 	})
 	blocks := make([]ctxpkg.Block, 0, len(preamble)+len(result.Blocks))
@@ -360,7 +360,7 @@ func (r *Runtime) finish(ctx stdctx.Context, outcome RunOutcome, req RunRequest,
 	// 收尾四件旁路事：终态快照、事件、记忆沉淀。**任何一件失败都不得让运行失败。**
 	r.saveTerminal(ctx, outcome.RunID, outcome.Status, req, outcome.Stage, outcome.Reason)
 	r.emit(ctx, EventRunFinished, map[string]any{
-		"run_id": outcome.RunID, "stage": outcome.Stage, "status": outcome.Status,
+		"run_id": outcome.RunID, "session_id": req.SessionID, "stage": outcome.Stage, "status": outcome.Status,
 		"steps": outcome.Steps, "tool_calls": outcome.ToolCalls,
 		"elapsed_s": outcome.Elapsed.Seconds(), "cost": outcome.CostText(),
 		"error": outcome.Error, "reason": outcome.Reason,

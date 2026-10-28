@@ -1,0 +1,377 @@
+# BesaAgent 本地 Kubernetes 部署（Docker Desktop Kubernetes）
+#
+# 前置：
+#   1. 构建镜像：见 deploy/README-local.md
+#   2. Postgres/Redis/NATS 已由同目录清单部署
+# 访问控制面：kubectl -n besa-local port-forward svc/besa-control 8080:8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-gateway}
+  template:
+    metadata:
+      labels: {app: besa-gateway}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+        - name: wait-redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until redis-cli -h redis ping | grep -q PONG; do echo waiting redis; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "gateway"]
+          ports: [{name: grpc, containerPort: 9001}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {tcpSocket: {port: 9001}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9001}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-gateway
+spec:
+  selector: {app: besa-gateway}
+  ports: [{name: grpc, port: 9001, targetPort: 9001}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-tool
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-tool}
+  template:
+    metadata:
+      labels: {app: besa-tool}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+        - name: wait-redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until redis-cli -h redis ping | grep -q PONG; do echo waiting redis; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "tool"]
+          ports: [{name: grpc, containerPort: 9002}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          readinessProbe: {tcpSocket: {port: 9002}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9002}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: "2", memory: 1Gi}
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-tool
+spec:
+  selector: {app: besa-tool}
+  ports: [{name: grpc, port: 9002, targetPort: 9002}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-agent}
+  template:
+    metadata:
+      labels: {app: besa-agent}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+        - name: wait-redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until redis-cli -h redis ping | grep -q PONG; do echo waiting redis; sleep 2; done"]
+        - name: wait-nats
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until wget -q -O- http://nats:8222/healthz >/dev/null 2>&1; do echo waiting nats; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "agent"]
+          ports: [{name: grpc, containerPort: 9003}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {tcpSocket: {port: 9003}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9003}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "2", memory: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-agent
+spec:
+  selector: {app: besa-agent}
+  ports: [{name: grpc, port: 9003, targetPort: 9003}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-memory
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-memory}
+  template:
+    metadata:
+      labels: {app: besa-memory}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "memory"]
+          ports: [{name: grpc, containerPort: 9004}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {tcpSocket: {port: 9004}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9004}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-memory
+spec:
+  selector: {app: besa-memory}
+  ports: [{name: grpc, port: 9004, targetPort: 9004}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-strategy
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-strategy}
+  template:
+    metadata:
+      labels: {app: besa-strategy}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "strategy"]
+          ports: [{name: grpc, containerPort: 9005}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {tcpSocket: {port: 9005}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9005}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-strategy
+spec:
+  selector: {app: besa-strategy}
+  ports: [{name: grpc, port: 9005, targetPort: 9005}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-experience
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-experience}
+  template:
+    metadata:
+      labels: {app: besa-experience}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "experience"]
+          ports: [{name: grpc, containerPort: 9006}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {tcpSocket: {port: 9006}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9006}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-experience
+spec:
+  selector: {app: besa-experience}
+  ports: [{name: grpc, port: 9006, targetPort: 9006}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-orchestrator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: besa-orchestrator}
+  template:
+    metadata:
+      labels: {app: besa-orchestrator}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+        - name: wait-nats
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until wget -q -O- http://nats:8222/healthz >/dev/null 2>&1; do echo waiting nats; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "orchestrator"]
+          ports:
+            - {name: orchestrator, containerPort: 9007}
+            - {name: workflow, containerPort: 9008}
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {tcpSocket: {port: 9007}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {tcpSocket: {port: 9007}, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-orchestrator
+spec:
+  selector: {app: besa-orchestrator}
+  ports:
+    - {name: orchestrator, port: 9007, targetPort: 9007}
+    - {name: workflow, port: 9008, targetPort: 9008}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: besa-control
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: besa-control}
+  template:
+    metadata:
+      labels: {app: besa-control}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432 -U besa -d besa_agent; do echo waiting postgres; sleep 2; done"]
+        - name: wait-nats
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until wget -q -O- http://nats:8222/healthz >/dev/null 2>&1; do echo waiting nats; sleep 2; done"]
+      containers:
+        - name: besa
+          image: besa-agent:v4
+          imagePullPolicy: IfNotPresent
+          args: ["--env", "prod", "serve", "--role", "control"]
+          ports: [{name: http, containerPort: 8080}]
+          envFrom:
+            - configMapRef: {name: besa-config}
+            - secretRef: {name: besa-secrets}
+          readinessProbe: {httpGet: {path: /readyz, port: 8080}, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 30}
+          livenessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 30, periodSeconds: 10, failureThreshold: 3}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: besa-control
+spec:
+  selector: {app: besa-control}
+  ports: [{name: http, port: 8080, targetPort: 8080}]

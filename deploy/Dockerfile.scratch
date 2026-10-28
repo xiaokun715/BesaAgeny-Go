@@ -1,0 +1,13 @@
+# 无基础镜像的构建：本地 Docker 镜像源不可用也能出镜像。
+# 依赖：先执行 CGO_ENABLED=0 GOOS=linux go build -o dist/besa-linux ./cmd/besa
+FROM scratch
+
+COPY deploy/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY dist/besa-linux /usr/local/bin/besa
+WORKDIR /app
+COPY configs /app/configs
+
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/besa"]
+CMD ["--env", "prod", "serve", "--role", "all"]

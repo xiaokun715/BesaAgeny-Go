@@ -1,5 +1,7 @@
 # 部署
 
+> Windows + Docker Desktop Kubernetes 的完整本地部署步骤见 [README-local.md](README-local.md)。
+
 ## 本地 / 单机
 
 ```bash

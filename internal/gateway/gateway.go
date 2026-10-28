@@ -139,7 +139,7 @@ func (g *Gateway) Chat(ctx context.Context, alias string, messages []domain.Mess
 	if len(chain) == 0 {
 		return domain.GatewayResult{}, &NoCapableModelError{Alias: alias, Missing: skipped}
 	}
-	g.emit(ctx, EventCallStarted, map[string]any{"alias": alias, "candidates": keysOf(chain)})
+	g.emit(ctx, EventCallStarted, map[string]any{"alias": alias, "session_id": opts.SessionID, "candidates": keysOf(chain)})
 
 	attempts := make([]domain.AttemptRecord, 0, len(chain))
 	for index, spec := range chain {
@@ -153,7 +153,7 @@ func (g *Gateway) Chat(ctx context.Context, alias string, messages []domain.Mess
 		}
 		decision := DecideFallback(g.fallback, budget, remaining, false)
 		if decision.Proceed {
-			g.emit(ctx, EventCallDegraded, map[string]any{"alias": alias, "from": spec.Key, "reason": decision.Reason})
+			g.emit(ctx, EventCallDegraded, map[string]any{"alias": alias, "session_id": opts.SessionID, "from": spec.Key, "reason": decision.Reason})
 			continue
 		}
 		return domain.GatewayResult{}, g.terminal(decision.Reason, alias, attempts)
@@ -182,7 +182,7 @@ func (g *Gateway) Embed(ctx context.Context, alias string, texts []string, opts 
 	if len(chain) == 0 {
 		return domain.GatewayResult{}, &NoCapableModelError{Alias: alias, Missing: skipped}
 	}
-	g.emit(ctx, EventCallStarted, map[string]any{"alias": alias, "candidates": keysOf(chain)})
+	g.emit(ctx, EventCallStarted, map[string]any{"alias": alias, "session_id": opts.SessionID, "candidates": keysOf(chain)})
 
 	attempts := make([]domain.AttemptRecord, 0, len(chain))
 	for index, spec := range chain {
@@ -199,7 +199,7 @@ func (g *Gateway) Embed(ctx context.Context, alias string, texts []string, opts 
 		}
 		decision := DecideFallback(g.fallback, budget, remaining, false)
 		if decision.Proceed {
-			g.emit(ctx, EventCallDegraded, map[string]any{"alias": alias, "from": spec.Key, "reason": decision.Reason})
+			g.emit(ctx, EventCallDegraded, map[string]any{"alias": alias, "session_id": opts.SessionID, "from": spec.Key, "reason": decision.Reason})
 			continue
 		}
 		return domain.GatewayResult{}, g.terminal(decision.Reason, alias, attempts)
@@ -357,7 +357,7 @@ func (g *Gateway) streamLoop(ctx context.Context, alias string, chain []ModelSpe
 func (g *Gateway) attempt(ctx context.Context, spec ModelSpec, alias string, messages []domain.Message, budget *CallBudget, estimate int, attempts *[]domain.AttemptRecord, opts ChatOptions, _ bool) (domain.ChatResponse, bool) {
 	if !g.health.Allow(spec.Key) {
 		*attempts = append(*attempts, domain.AttemptRecord{ModelKey: spec.Key, Provider: spec.Provider, Outcome: "skipped", SkippedReason: "circuit_open"})
-		g.emit(ctx, EventModelSkipped, map[string]any{"model": spec.Key, "reason": "circuit_open"})
+		g.emit(ctx, EventModelSkipped, map[string]any{"model": spec.Key, "session_id": opts.SessionID, "reason": "circuit_open"})
 		return domain.ChatResponse{}, false
 	}
 	decision, err := g.limiter.Acquire(ctx, spec.Key, estimate, budget)
@@ -368,7 +368,7 @@ func (g *Gateway) attempt(ctx context.Context, spec ModelSpec, alias string, mes
 			reason = "cancelled"
 		}
 		*attempts = append(*attempts, domain.AttemptRecord{ModelKey: spec.Key, Provider: spec.Provider, Outcome: "skipped", SkippedReason: "rate_limited:" + reason})
-		g.emit(ctx, EventQuotaExhausted, map[string]any{"model": spec.Key, "reason": reason})
+		g.emit(ctx, EventQuotaExhausted, map[string]any{"model": spec.Key, "session_id": opts.SessionID, "reason": reason})
 		return domain.ChatResponse{}, false
 	}
 	probe := true
@@ -419,7 +419,7 @@ func (g *Gateway) attempt(ctx context.Context, spec ModelSpec, alias string, mes
 				Error: err.Error(), Retryable: retryable, ElapsedS: g.clk.Since(started).Seconds(),
 			})
 			g.recordFailureUsage(spec, alias, opts)
-			g.emit(ctx, EventCallFailed, map[string]any{"model": spec.Key, "error": err.Error(), "retryable": retryable})
+			g.emit(ctx, EventCallFailed, map[string]any{"model": spec.Key, "session_id": opts.SessionID, "error": err.Error(), "retryable": retryable})
 			if !retryable || retryIndex >= g.retry.MaxAttemptsPerCandidate-1 {
 				return domain.ChatResponse{}, false
 			}
@@ -428,7 +428,7 @@ func (g *Gateway) attempt(ctx context.Context, spec ModelSpec, alias string, mes
 				return domain.ChatResponse{}, false
 			}
 			retryIndex++
-			g.emit(ctx, EventCallRetried, map[string]any{"model": spec.Key, "attempt": retryIndex, "delay_s": delay.Seconds()})
+			g.emit(ctx, EventCallRetried, map[string]any{"model": spec.Key, "session_id": opts.SessionID, "attempt": retryIndex, "delay_s": delay.Seconds()})
 			if err := g.clk.Sleep(ctx, delay); err != nil {
 				return domain.ChatResponse{}, false
 			}
@@ -576,7 +576,7 @@ func (g *Gateway) finalize(resp domain.ChatResponse, alias string, spec ModelSpe
 		slog.Warn("发生降级", "alias", alias, "model", spec.Key, "index", index+1, "trace_id", opts.TraceID)
 	}
 	g.emit(context.Background(), EventCallSucceeded, map[string]any{
-		"alias": alias, "model": spec.Key, "trace_id": opts.TraceID, "degraded": degraded, "cost": cost.String(),
+		"alias": alias, "model": spec.Key, "trace_id": opts.TraceID, "session_id": opts.SessionID, "degraded": degraded, "cost": cost.String(),
 	})
 	return domain.GatewayResult{
 		Response: resp, Alias: alias, ModelKey: spec.Key, Attempts: attempts,
@@ -630,6 +630,9 @@ func (g *Gateway) emit(ctx context.Context, name string, payload map[string]any)
 	ev := event.New(name)
 	ev.TraceID = ids.Trace(ctx)
 	ev.Payload = payload
+	if sid, ok := payload["session_id"].(string); ok {
+		ev.SessionID = sid
+	}
 	if alias, ok := payload["alias"].(string); ok {
 		ev.Alias = alias
 	}

@@ -331,7 +331,14 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		case ev := <-ch:
-			if sessionID != "" && ev.SessionID != sessionID {
+			evSession := ev.SessionID
+			if evSession == "" {
+				// 兼容只把 session_id 放在 payload 里的模块（如 gateway）。
+				if sid, ok := ev.Payload["session_id"].(string); ok {
+					evSession = sid
+				}
+			}
+			if sessionID != "" && evSession != sessionID {
 				continue
 			}
 			if traceID != "" && ev.TraceID != traceID {

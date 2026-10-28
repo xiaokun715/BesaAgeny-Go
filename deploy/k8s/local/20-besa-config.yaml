@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: besa-config
+data:
+  BESA_ENV: "prod"
+  BESA_LOG_LEVEL: "INFO"
+  BESA_WORKDIR: "/workspace"
+  # 本地演示不部署 MinIO：大结果落工具容器内的 /workspace/.tool_out。
+  # 需要跨 pod 持久化时，部署 MinIO 并设置 BESA_S3_ENDPOINT。
+  BESA_S3_ENDPOINT: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: besa-secrets
+type: Opaque
+stringData:
+  # 仅本地演示；生产请用外部 Secret 管理并改强密码。
+  BESA_POSTGRES_DSN: postgresql://besa:besa-local@postgres.besa-local.svc.cluster.local:5432/besa_agent
+  BESA_REDIS_URL: redis://redis.besa-local.svc.cluster.local:6379/0
+  BESA_NATS_URL: nats://nats.besa-local.svc.cluster.local:4222
+  MINIO_ACCESS_KEY: ""
+  MINIO_SECRET_KEY: ""
+  # 默认 mock，不需要密钥；接真实模型时填入并把 configs/prod.yaml 的候选链改掉。
+  DEEPSEEK_API_KEY: ""
+  OPENAI_API_KEY: ""
+  DASHSCOPE_API_KEY: ""

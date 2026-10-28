@@ -12,6 +12,7 @@ import (
 	"github.com/besa-ai/besa-agent/internal/experience"
 	"github.com/besa-ai/besa-agent/internal/foundation/ids"
 	"github.com/besa-ai/besa-agent/internal/service/controld"
+	"github.com/besa-ai/besa-agent/internal/store/postgres"
 	redisstore "github.com/besa-ai/besa-agent/internal/store/redis"
 	"github.com/besa-ai/besa-agent/internal/transport"
 	"github.com/besa-ai/besa-agent/internal/workflow"
@@ -26,6 +27,7 @@ type Worker struct {
 	Engine     *workflow.Engine
 	Pool       *workflow.Pool
 	Experience *transport.ExperienceClient
+	Runs       *postgres.RunRepo
 }
 
 // StartAgent 消费 agent.run 与 agent.cancel。
@@ -68,6 +70,13 @@ func (w *Worker) handleAgent(ctx context.Context, payload []byte) error {
 	runID := job.RunID
 	if runID == "" {
 		runID = ids.New("run")
+	}
+	if w.Tasks != nil && job.TaskID != "" {
+		// 任务顶层 run_id 必须可见，否则查询任务时拿不到运行 id。
+		_ = w.Tasks.UpdateStatus(ctx, job.TaskID, "running", runID, "")
+	}
+	if w.Runs != nil {
+		_ = w.Runs.Create(ctx, runID, job.SessionID, job.Caller, job.Stage, job.Goal)
 	}
 	// 跨进程取消：轮询 Redis，让 runtime 在下一个检查点退出。
 	if w.Redis != nil {
@@ -112,6 +121,10 @@ func (w *Worker) handleAgent(ctx context.Context, payload []byte) error {
 			result["recovery_action"] = string(decision.Action)
 			result["recovery_reason"] = decision.Reason
 		}
+	}
+	if w.Runs != nil {
+		currency := w.Base.Config.String("gateway.cost.currency", "CNY")
+		_ = w.Runs.Finish(ctx, runID, outcome.Status, outcome.Cost, currency)
 	}
 	if w.Tasks != nil && job.TaskID != "" {
 		_ = w.Tasks.Complete(ctx, job.TaskID, string(outcome.Status), result, outcome.Error)
@@ -170,6 +183,7 @@ func (w *Worker) handleWorkflow(ctx context.Context, payload []byte) error {
 		errMsg = err.Error()
 	}
 	if w.Tasks != nil && job.TaskID != "" {
+		_ = w.Tasks.UpdateStatus(ctx, job.TaskID, "running", report.WorkflowRunID, "")
 		_ = w.Tasks.Complete(ctx, job.TaskID, status, result, errMsg)
 	}
 	return nil
